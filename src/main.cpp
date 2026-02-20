@@ -1,43 +1,72 @@
-#include <Adafruit_MPU6050.h>
-#include <Adafruit_Sensor.h>
-#include <Wire.h>
+#include <Arduino.h>
+#include <LittleFS.h>
+#include "config.h"
+#include "ISO_Analyzer.h"
+#include "NetworkManager.h"
 
-Adafruit_MPU6050 mpu;
+ISO_Analyzer analyzer;
+NetworkManager network(WIFI_SSID, WIFI_PASS, MQTT_BROKER_IP, MQTT_PORT);
 
-// Configuración de pines según la tabla anterior
-const int MIC_PIN = 1;     // ADC para el MAX9814
-const int TEMP_RX_PIN = 4; // RX para el módulo de temperatura
+// Callback executed when Python sends a new JSON via MQTT
+void onConfigurationReceived(JsonDocument& doc) {
+    Serial.println("Applying new configuration from PC...");
+    
+    File file = LittleFS.open(CONFIG_FILE_PATH, "w");
+    if (file) {
+        serializeJson(doc, file);
+        file.close();
+        
+        // Reload analyzer with new data
+        analyzer.loadConfig(CONFIG_FILE_PATH);
+        
+        // Update network manager in case the machine name changed
+        String newMachineName = analyzer.getConfig().machineName;
+        network.updateDeviceId(newMachineName);
+        
+        Serial.println("System updated successfully.");
+    }
+}
 
 void setup() {
-  Serial.begin(115200);
-  Serial1.begin(9600, SERIAL_8N1, TEMP_RX_PIN, -1); // Puerto para el sensor de temperatura
+    Serial.begin(115200);
+    
+    // Initialize File System
+    if (!LittleFS.begin(true)) {
+        Serial.println("Critical Error: LittleFS mount failed");
+        return;
+    }
 
-  // Iniciar I2C en los pines GP8 y GP9 del Super Mini
-  Wire.begin(8, 9); 
+    // 1. Try to load existing configuration
+    String currentDeviceId = FALLBACK_DEVICE_ID;
+    if (analyzer.loadConfig(CONFIG_FILE_PATH)) {
+        currentDeviceId = analyzer.getConfig().machineName;
+        Serial.println("Loaded config for: " + currentDeviceId);
+    } else {
+        Serial.println("No config found. Using fallback ID.");
+    }
 
-  if (!mpu.begin()) {
-    Serial.println("Error: No se encontró el MPU6050");
-    while (1) yield();
-  }
-  Serial.println("MPU6050 Listo!");
+    // 2. Initialize Network with the loaded (or fallback) ID
+    network.begin(currentDeviceId);
+    network.setConfigCallback(onConfigurationReceived);
 }
 
 void loop() {
-  // 1. Probar MPU6050
-  sensors_event_t a, g, temp;
-  mpu.getEvent(&a, &g, &temp);
-  Serial.print("Acel X: "); Serial.print(a.acceleration.x);
+    network.loop(); // Handles Wi-Fi/MQTT asynchronously
 
-  // 2. Probar Micrófono (MAX9814)
-  int micValue = analogRead(MIC_PIN);
-  Serial.print(" | Mic: "); Serial.print(micValue);
+    // Sensor acquisition loop (Non-blocking)
+    static unsigned long lastAnalysisTime = 0;
+    if (millis() - lastAnalysisTime > 1000) { 
+        lastAnalysisTime = millis();
+        
+        // Simulated dummy data (Replace with I2S/ADC sensor reading)
+        float dummyBuffer[100]; 
+        for(int i=0; i<100; i++) dummyBuffer[i] = random(0, 50) / 10.0; 
 
-  // 3. Probar Temperatura (Lectura Serial del módulo Starware)
-  if (Serial1.available()) {
-    String data = Serial1.readStringUntil('\n');
-    Serial.print(" | Temp Raw: "); Serial.print(data);
-  }
+        // Execute ISO 20816 Math
+        AnalysisResult result = analyzer.analyze(dummyBuffer, 100);
+        String zoneLabel = analyzer.getZoneString(result.zone);
 
-  Serial.println("");
-  delay(500);
+        // Send results to Python/Broker
+        network.publishTelemetry(result.rms, result.variance, zoneLabel);
+    }
 }
