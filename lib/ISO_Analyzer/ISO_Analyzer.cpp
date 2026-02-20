@@ -1,0 +1,1 @@
+// escribir el código real de las funciones del archivo ISO_Analyzer.h.

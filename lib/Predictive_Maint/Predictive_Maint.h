@@ -1,0 +1,1 @@
+// declarar la estructura del código de ultrasonido: los nombres de las funciones, las clases y las variables que otros archivos pueden usar.
