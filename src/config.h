@@ -1,9 +1,11 @@
 #pragma once
 
+#ifndef CONFIG_H
+#define CONFIG_H
 // Network Credentials
 #define WIFI_SSID "TU_RED_WIFI"
 #define WIFI_PASS "TU_PASSWORD"
-#define MQTT_BROKER_IP "192.168.1.100"
+#define MQTT_BROKER_IP "192.168.1.113"
 #define MQTT_PORT 1883
 
 // File System
@@ -14,3 +16,5 @@
 
 // Data Acquisition
 #define SAMPLE_SIZE 1024 // Adjust based on your sensor buffer
+
+#endif // CONFIG_H

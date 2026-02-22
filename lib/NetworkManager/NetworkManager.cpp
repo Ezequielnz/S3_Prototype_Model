@@ -1,4 +1,5 @@
 #include "NetworkManager.h"
+#include "../src/config.h"
 
 NetworkManager* NetworkManager::_instance = nullptr;
 
@@ -10,9 +11,25 @@ NetworkManager::NetworkManager(String ssid, String password, String mqttServer, 
     _instance = this;
 }
 
-void NetworkManager::begin(String deviceId) {
-    _deviceId = deviceId;
+String NetworkManager::getCleanMacAddress() {
+    String mac = WiFi.macAddress();
+    mac.replace(":", ""); // Remove colons for a cleaner ID
+    return mac;
+}
+
+void NetworkManager::generateDeviceIdentity() {
+    String mac = getCleanMacAddress();
     
+    // Cumpliendo con tus reglas estrictas de hardware nuevo
+    _deviceId = "AIoT-" + mac;
+    _mqttConfigTopic = "maquinas/APC-" + mac + "/config";
+    
+    Serial.println("\n--- Device Identity Configured ---");
+    Serial.println("Device Name: " + _deviceId);
+    Serial.println("Config Topic: " + _mqttConfigTopic);
+}
+
+void NetworkManager::begin(String deviceId) {
     Serial.print("Connecting to WiFi: ");
     Serial.println(_ssid);
 
@@ -22,6 +39,15 @@ void NetworkManager::begin(String deviceId) {
         Serial.print(".");
     }
     Serial.println("\nWiFi Connected.");
+    
+    // Lógica de identidad: Si no se le pasa un ID (dispositivo nuevo de fábrica), auto-generamos
+    if (deviceId == "" || deviceId == FALLBACK_DEVICE_ID) {
+        generateDeviceIdentity();
+    } else {
+        _deviceId = deviceId;
+        // Si más adelante pasas la config vía LoRa, reconstruimos el tópico en base al nuevo nombre
+        _mqttConfigTopic = "maquinas/APC-" + _deviceId + "/config"; 
+    }
     
     _mqttClient.setClient(_espClient);
     _mqttClient.setServer(_mqttServer.c_str(), _mqttPort);
@@ -38,23 +64,22 @@ void NetworkManager::updateDeviceId(String newDeviceId) {
 
 void NetworkManager::reconnectMQTT() {
     while (!_mqttClient.connected()) {
-        Serial.print("Attempting MQTT connection...");
+        Serial.print("Attempting MQTT connection as ");
+        Serial.print(_deviceId);
+        Serial.print("...");
         
-        // Generate a unique client ID for the broker connection
-        String clientId = "ESP32-" + _deviceId + "-" + String(random(0xffff), HEX);
-        
-        if (_mqttClient.connect(clientId.c_str())) {
-            Serial.println("Connected to Broker.");
+        // El dispositivo se conecta al Broker asumiendo su propio nombre (AIoT-MAC)
+        if (_mqttClient.connect(_deviceId.c_str())) {
+            Serial.println(" Connected to Broker.");
             
-            // SUBSCRIBE: Listen for configurations for THIS specific machine
-            String topic = "machines/" + _deviceId + "/config";
-            _mqttClient.subscribe(topic.c_str());
-            Serial.println("Subscribed to: " + topic);
+            // Se suscribe al tópico correcto generado (maquinas/APC-MAC/config)
+            _mqttClient.subscribe(_mqttConfigTopic.c_str());
+            Serial.println("Subscribed to: " + _mqttConfigTopic);
         } else {
-            Serial.print("Failed, rc=");
+            Serial.print(" Failed, rc=");
             Serial.print(_mqttClient.state());
             Serial.println(" Retrying in 5 seconds...");
-            delay(5000); // Note: In a real non-blocking scenario, use millis() here instead of delay()
+            delay(5000); 
         }
     }
 }
@@ -66,7 +91,7 @@ void NetworkManager::mqttCallback(char* topic, byte* payload, unsigned int lengt
 }
 
 void NetworkManager::processIncomingMessage(char* topic, byte* payload, unsigned int length) {
-    Serial.println("New MQTT Message received.");
+    Serial.println("\nNew MQTT Message received.");
 
     JsonDocument doc;
     DeserializationError error = deserializeJson(doc, payload, length);
@@ -86,7 +111,7 @@ void NetworkManager::loop() {
     if (!_mqttClient.connected()) {
         reconnectMQTT();
     }
-    _mqttClient.loop(); // Keeps the MQTT connection alive and checks for incoming messages
+    _mqttClient.loop();
 }
 
 void NetworkManager::setConfigCallback(ConfigCallback callback) {
@@ -105,6 +130,7 @@ void NetworkManager::publishTelemetry(float rms, float variance, String zone) {
     char buffer[256];
     serializeJson(doc, buffer);
 
-    String topic = "machines/" + _deviceId + "/telemetry";
-    _mqttClient.publish(topic.c_str(), buffer);
+    // Actualicé este tópico para que mantenga coherencia con español, aunque es tu función original
+    String telemetryTopic = "maquinas/APC-" + getCleanMacAddress() + "/telemetry";
+    _mqttClient.publish(telemetryTopic.c_str(), buffer);
 }

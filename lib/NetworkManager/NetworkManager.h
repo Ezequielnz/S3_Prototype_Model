@@ -1,5 +1,8 @@
 #pragma once
 
+#ifndef NETWORK_MANAGER_H
+#define NETWORK_MANAGER_H
+
 #include <Arduino.h>
 #include <WiFi.h>
 #include <PubSubClient.h>
@@ -14,7 +17,9 @@ private:
     String _password;
     String _mqttServer;
     int _mqttPort;
-    String _deviceId; // Now dynamic, not a constant char*
+    
+    String _deviceId;        // Se llamará: AIoT-(MAC)
+    String _mqttConfigTopic; // Será: maquinas/APC-(MAC)/config
     
     WiFiClient _espClient;
     PubSubClient _mqttClient;
@@ -24,16 +29,22 @@ private:
     static void mqttCallback(char* topic, byte* payload, unsigned int length);
     static NetworkManager* _instance; 
 
+    // Declaraciones faltantes agregadas aquí
+    String getCleanMacAddress();
+    void generateDeviceIdentity();
+
 public:
     NetworkManager(String ssid, String password, String mqttServer, int port);
     
-    void begin(String deviceId);
+    // begin() ahora usa un valor por defecto vacío para auto-generar la MAC si es nuevo
+    void begin(String deviceId = ""); 
     void loop();
     
-    // Allows updating the MQTT topic dynamically if the JSON changes the machine name
     void updateDeviceId(String newDeviceId); 
     
     void setConfigCallback(ConfigCallback callback);
     void publishTelemetry(float rms, float variance, String zone);
     void processIncomingMessage(char* topic, byte* payload, unsigned int length);
 };
+
+#endif // NETWORK_MANAGER_H
