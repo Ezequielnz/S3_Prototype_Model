@@ -25,7 +25,8 @@ struct IsoThresholds {
 // Structure to store the complete configuration
 struct MachineConfig {
     String machineName;
-    String isoClass;
+    String isoGroup;
+    String support;
     IsoThresholds thresholds;
     int samplingRate;
     bool isLoaded = false;

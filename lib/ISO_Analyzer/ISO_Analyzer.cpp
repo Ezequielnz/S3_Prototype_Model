@@ -29,7 +29,8 @@ bool ISO_Analyzer::loadConfig(const char* filepath) {
 
     // Assign JSON values to our structure
     currentConfig.machineName = doc["machine_name"].as<String>();
-    currentConfig.isoClass = doc["iso_class"].as<String>();
+    currentConfig.isoGroup = doc["iso_group"].as<String>();
+    currentConfig.support = doc["support"].as<String>();
     
     JsonObject thresholds = doc["thresholds"];
     currentConfig.thresholds.satisfactory = thresholds["satisfactory"];

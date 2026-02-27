@@ -96,9 +96,10 @@ void loop() {
     // Using a non-blocking timer (millis) instead of delay() ensures the network
     // stack is never starved of CPU time.
     static unsigned long lastAnalysisTime = 0;
-    const unsigned long ANALYSIS_INTERVAL_MS = 1000; // Run every 1 second
+    unsigned long interval = analyzer.getConfig().isLoaded ? 
+                             analyzer.getConfig().samplingRate : 1000;
     
-    if (millis() - lastAnalysisTime >= ANALYSIS_INTERVAL_MS) { 
+    if (millis() - lastAnalysisTime >= interval) { 
         lastAnalysisTime = millis();
         
         // TODO: Replace this dummy buffer with real I2S / ADC DMA sampling 
