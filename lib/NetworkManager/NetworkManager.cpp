@@ -1,5 +1,5 @@
 #include "NetworkManager.h"
-#include "../src/config.h"
+#include "config.h"
 
 NetworkManager* NetworkManager::_instance = nullptr;
 
