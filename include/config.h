@@ -3,9 +3,9 @@
 #ifndef CONFIG_H
 #define CONFIG_H
 // Network Credentials
-#define WIFI_SSID "WIFI-NUÑEZ-ALARCON"
-#define WIFI_PASS "namuebles2025"
-#define MQTT_BROKER_IP "192.168.1.110"
+#define WIFI_SSID "Privado"
+#define WIFI_PASS "Privado314$"
+#define MQTT_BROKER_IP "192.168.1.103"
 #define MQTT_PORT 1883
 
 // File System
