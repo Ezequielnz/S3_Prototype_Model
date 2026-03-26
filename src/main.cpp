@@ -1,5 +1,8 @@
 #include <Arduino.h>
 #include <LittleFS.h>
+#include <Wire.h>
+#include <Adafruit_MPU6050.h>
+#include <Adafruit_Sensor.h>
 #include "config.h"
 #include "ISO_Analyzer.h"     // Your ISO 20816 vibration analysis library
 #include "NetworkManager.h"   // The corrected NetworkManager library
@@ -7,6 +10,7 @@
 // --- Global Object Instantiation ---
 ISO_Analyzer analyzer;
 NetworkManager network(WIFI_SSID, WIFI_PASS, MQTT_BROKER_IP, MQTT_PORT);
+Adafruit_MPU6050 mpu;
 
 /**
  * @brief Callback function triggered when a new JSON payload arrives via MQTT.
@@ -46,10 +50,24 @@ void onConfigurationReceived(JsonDocument& doc) {
 
 void setup() {
     Serial.begin(115200);
+    // while (!Serial) { delay(10); } // ESPERA DE SERIAL ELIMINADA para permitir uso con fuente de alimentación externa
     delay(1000); // Allow serial monitor to catch up
     Serial.println("\n=========================================");
     Serial.println("   INDUSTRIAL PREDICTIVE MAINT SYSTEM    ");
     Serial.println("=========================================");
+
+    // --- Configuración e Inicialización de Hardware (Buzzer y MPU6050) ---
+    pinMode(BUZZER_PIN, OUTPUT);
+    digitalWrite(BUZZER_PIN, LOW); // Asegurarse de que el buzzer esté apagado
+
+    Wire.begin(MPU_SDA_PIN, MPU_SCL_PIN);
+    if (!mpu.begin(0x68, &Wire, 0)) {
+        Serial.println("[ERROR] No se pudo encontrar el MPU6050. Revisa el cableado.");
+    } else {
+        Serial.println("[SYSTEM] MPU6050 inicializado correctamente.");
+        mpu.setAccelerometerRange(MPU6050_RANGE_8_G);
+        mpu.setFilterBandwidth(MPU6050_BAND_21_HZ);
+    }
     
     // --- 1. Initialize Non-Volatile File System (LittleFS) ---
     if (!LittleFS.begin(true)) {
@@ -97,23 +115,81 @@ void loop() {
     // stack is never starved of CPU time.
     static unsigned long lastAnalysisTime = 0;
     unsigned long interval = analyzer.getConfig().isLoaded ? 
-                             analyzer.getConfig().samplingRate : 1000;
+    analyzer.getConfig().samplingRate : 1000;
     
     if (millis() - lastAnalysisTime >= interval) { 
         lastAnalysisTime = millis();
         
-        // TODO: Replace this dummy buffer with real I2S / ADC DMA sampling 
-        // from your industrial accelerometer.
-        float dummyBuffer[100]; 
+        // Lectura del sensor MPU6050 en lugar del dummy buffer
+        float realBuffer[100]; 
         for(int i = 0; i < 100; i++) {
-            dummyBuffer[i] = random(0, 50) / 10.0; 
+            sensors_event_t a, g, temp;
+            
+            // Inicializar las estructuras a 0 para borrar "basura de memoria"
+            memset(&a, 0, sizeof(a));
+            memset(&g, 0, sizeof(g));
+            memset(&temp, 0, sizeof(temp));
+
+            // Si se lee correctamente, usamos la magnitud real. Si falla, queda en 0.
+            if (mpu.getEvent(&a, &g, &temp)) {
+                // Usamos la magnitud de la aceleración para el análisis de vibración
+                realBuffer[i] = sqrt(pow(a.acceleration.x, 2) + pow(a.acceleration.y, 2) + pow(a.acceleration.z, 2)); 
+            } else {
+                realBuffer[i] = 0.0f; 
+            }
+            delay(2); // Retardo pequeño para espaciar las muestras
         }
 
         // Execute Edge processing: ISO 20816 Math (RMS, Variance, FFT, etc.)
-        AnalysisResult result = analyzer.analyze(dummyBuffer, 100);
+        AnalysisResult result = analyzer.analyze(realBuffer, 100);
         String zoneLabel = analyzer.getZoneString(result.zone); // e.g., "ZONE_A_GOOD", "ZONE_D_DANGER"
 
         // Publish the telemetry data to the MQTT broker
         network.publishTelemetry(result.rms, result.variance, zoneLabel);
+
+        // Activar el buzzer (pin 11) cuando supera los límites de la zona C de la norma ISO
+        // (es decir, cuando rebasa el umbral inaceptable y entra en Zona D)
+        if (result.zone == IsoZone::ZONE_B) {
+            digitalWrite(BUZZER_PIN, HIGH);
+            delay(500);
+            digitalWrite(BUZZER_PIN, LOW);
+            delay(500);
+            digitalWrite(BUZZER_PIN, HIGH);
+            delay(500);
+            digitalWrite(BUZZER_PIN, LOW);
+            delay(500);
+            digitalWrite(BUZZER_PIN, HIGH);
+            delay(500);
+            digitalWrite(BUZZER_PIN, LOW);
+            delay(500);
+            digitalWrite(BUZZER_PIN, HIGH);
+            delay(500);
+            digitalWrite(BUZZER_PIN, LOW);
+        } else if (result.zone == IsoZone::ZONE_C)
+        {
+            digitalWrite(BUZZER_PIN, HIGH);
+            delay(1000);
+            digitalWrite(BUZZER_PIN, LOW);
+            delay(500);
+            digitalWrite(BUZZER_PIN, HIGH);
+            delay(1000);
+            digitalWrite(BUZZER_PIN, LOW);
+            delay(500);
+            digitalWrite(BUZZER_PIN, HIGH);
+            delay(1000);
+            digitalWrite(BUZZER_PIN, LOW);
+            delay(500);
+            digitalWrite(BUZZER_PIN, HIGH);
+            delay(1000);
+            digitalWrite(BUZZER_PIN, LOW);
+        }
+        else if (result.zone == IsoZone::ZONE_D)
+        {
+            digitalWrite(BUZZER_PIN, HIGH);
+        }
+        
+        else {
+            digitalWrite(BUZZER_PIN, LOW);
+        }
     }
 }

@@ -54,7 +54,7 @@ float ISO_Analyzer::calculateMean(const float* data, size_t length) {
 
 AnalysisResult ISO_Analyzer::analyze(const float* rawData, size_t length) {
     AnalysisResult result = {0.0f, 0.0f, IsoZone::UNKNOWN};
-    if (length == 0 || !currentConfig.isLoaded) return result;
+    if (length == 0) return result;
 
     float mean = calculateMean(rawData, length);
     float sumSquaresRMS = 0.0f;
@@ -69,11 +69,17 @@ AnalysisResult ISO_Analyzer::analyze(const float* rawData, size_t length) {
         sumSquaresVar += diff * diff;
     }
 
-    result.rms = sqrt(sumSquaresRMS / length);
+    // En lugar de usar el RMS absoluto (que incluye los ~9.8 m/s² de gravedad),
+    // calculamos el AC RMS (RMS de la componente variable), el cual es 
+    // matemáticamente idéntico a la Desviación Estándar.
+    // Esto anula automáticamente el valor inicial/estático de la gravedad.
+    result.rms = sqrt(sumSquaresVar / length);
     result.variance = sumSquaresVar / length;
 
     // Classification logic according to the ISO 20816 standard and dynamic JSON
-    if (result.rms <= currentConfig.thresholds.satisfactory) {
+    if (!currentConfig.isLoaded) {
+        result.zone = IsoZone::UNKNOWN;
+    } else if (result.rms <= currentConfig.thresholds.satisfactory) {
         result.zone = IsoZone::ZONE_A;
     } else if (result.rms <= currentConfig.thresholds.unsatisfactory) {
         result.zone = IsoZone::ZONE_B;
