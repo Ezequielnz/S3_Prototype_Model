@@ -57,22 +57,38 @@ AnalysisResult ISO_Analyzer::analyze(const float* rawData, size_t length) {
     if (length == 0) return result;
 
     float mean = calculateMean(rawData, length);
-    float sumSquaresRMS = 0.0f;
-    float sumSquaresVar = 0.0f;
-
+    
+    // Definir intervalo de tiempo dt según la frecuencia de muestreo de la configuración.
+    // Si no es válido, aproxima a 4ms (250Hz) para compensar el retardo de I2C.
+    float dt = (currentConfig.samplingRate > 0) ? (1.0f / currentConfig.samplingRate) : 0.004f;
+    
+    std::vector<float> velocity(length, 0.0f);
+    float current_velocity = 0.0f;
+    
+    // 1. Convertir aceleración a velocidad mediante integración numérica
+    // Constante de Filtro Pasa Altos (Leaky Integrator) para prevenir el 'drift' (desvío al infinito)
+    const float alpha = 0.98f; 
+    
     for (size_t i = 0; i < length; i++) {
-        // For RMS (accounts for total energy)
-        sumSquaresRMS += rawData[i] * rawData[i];
+        // Remover gravedad / componente DC de la aceleración
+        float accel_without_gravity = rawData[i] - mean; 
         
-        // For variance (fluctuation relative to the mean)
-        float diff = rawData[i] - mean;
+        // Integrar en el tiempo: v = a * dt. Multiplicar por 1000 para pasar de m/s a mm/s
+        // Se aplica 'alpha' (Leaky Integrator) para atenuar las bajas frecuencias.
+        current_velocity = alpha * current_velocity + (accel_without_gravity * dt * 1000.0f);
+        velocity[i] = current_velocity;
+    }
+
+    // 2. Calcular el RMS de la Velocidad en mm/s resultante
+    float vel_mean = calculateMean(velocity.data(), length);
+    float sumSquaresVar = 0.0f;
+    
+    for (size_t i = 0; i < length; i++) {
+        float diff = velocity[i] - vel_mean; // Eliminar offset residual de la velocidad
         sumSquaresVar += diff * diff;
     }
 
-    // En lugar de usar el RMS absoluto (que incluye los ~9.8 m/s² de gravedad),
-    // calculamos el AC RMS (RMS de la componente variable), el cual es 
-    // matemáticamente idéntico a la Desviación Estándar.
-    // Esto anula automáticamente el valor inicial/estático de la gravedad.
+    // El resultado final que evalúa la norma ISO 20816 es el RMS de la Velocidad, en mm/s
     result.rms = sqrt(sumSquaresVar / length);
     result.variance = sumSquaresVar / length;
 

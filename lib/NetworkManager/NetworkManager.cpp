@@ -20,9 +20,9 @@ String NetworkManager::getCleanMacAddress() {
 void NetworkManager::generateDeviceIdentity() {
     String mac = getCleanMacAddress();
     
-    // Cumpliendo con tus reglas estrictas de hardware nuevo
-    _deviceId = "AIoT-" + mac;
-    _mqttConfigTopic = "maquinas/APC-" + mac + "/config";
+    // Cumpliendo con tus reglas estrictas de hardware nuevo y el formato de Python
+    _deviceId = "APC-" + mac;
+    _mqttConfigTopic = "maquinas/" + _deviceId + "/config";
     
     Serial.println("\n--- Device Identity Configured ---");
     Serial.println("Device Name: " + _deviceId);
@@ -45,8 +45,8 @@ void NetworkManager::begin(String deviceId) {
         generateDeviceIdentity();
     } else {
         _deviceId = deviceId;
-        // Si más adelante pasas la config vía LoRa, reconstruimos el tópico en base al nuevo nombre
-        _mqttConfigTopic = "maquinas/APC-" + _deviceId + "/config"; 
+        // Reconstruimos el tópico en base al ID configurado (ej: Motor_01)
+        _mqttConfigTopic = "maquinas/" + _deviceId + "/config"; 
     }
     
     _mqttClient.setClient(_espClient);
@@ -57,6 +57,7 @@ void NetworkManager::begin(String deviceId) {
 void NetworkManager::updateDeviceId(String newDeviceId) {
     if (_deviceId != newDeviceId) {
         _deviceId = newDeviceId;
+        _mqttConfigTopic = "maquinas/" + _deviceId + "/config"; // Actualizar tópico de config
         Serial.println("Device ID updated. Reconnecting MQTT to apply new topics...");
         _mqttClient.disconnect(); // Forces reconnection with new topics in the next loop
     }
@@ -130,7 +131,7 @@ void NetworkManager::publishTelemetry(float rms, float variance, String zone) {
     char buffer[256];
     serializeJson(doc, buffer);
 
-    // Actualicé este tópico para que mantenga coherencia con español, aunque es tu función original
-    String telemetryTopic = "maquinas/APC-" + getCleanMacAddress() + "/telemetry";
+    // Actualicé este tópico para que publique directamente en el tópico de este dispositivo
+    String telemetryTopic = "maquinas/" + _deviceId + "/telemetry";
     _mqttClient.publish(telemetryTopic.c_str(), buffer);
 }

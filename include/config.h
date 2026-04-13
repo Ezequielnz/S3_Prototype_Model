@@ -3,9 +3,9 @@
 #ifndef CONFIG_H
 #define CONFIG_H
 // Network Credentials
-#define WIFI_SSID "iPhone de Irina"
-#define WIFI_PASS "26MONzon"
-#define MQTT_BROKER_IP "172.20.10.14"
+#define WIFI_SSID "iPhone de Ezequiel"
+#define WIFI_PASS "Exequielnz1"
+#define MQTT_BROKER_IP "172.20.10.5"
 #define MQTT_PORT 1883
 
 // File System
