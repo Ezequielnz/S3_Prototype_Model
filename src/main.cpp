@@ -1,195 +1,172 @@
-#include <Arduino.h>
-#include <LittleFS.h>
-#include <Wire.h>
-#include <Adafruit_MPU6050.h>
-#include <Adafruit_Sensor.h>
-#include "config.h"
-#include "ISO_Analyzer.h"     // Your ISO 20816 vibration analysis library
-#include "NetworkManager.h"   // The corrected NetworkManager library
-
-// --- Global Object Instantiation ---
-ISO_Analyzer analyzer;
-NetworkManager network(WIFI_SSID, WIFI_PASS, MQTT_BROKER_IP, MQTT_PORT);
-Adafruit_MPU6050 mpu;
-
-/**
- * @brief Callback function triggered when a new JSON payload arrives via MQTT.
- * * In an industrial environment, when the central Python server sends a new 
- * configuration (e.g., new machine limits, new sampling rates, or a new name),
- * this function saves the state to non-volatile memory so the device remembers
- * it after a power loss.
- * * @param doc The parsed JSON document received from the MQTT broker.
+/*
+ * ╔══════════════════════════════════════════════════════════════╗
+ * ║  PREPROCESADOR DE ALTA VELOCIDAD — ESP32-S3 + MPU6050       ║
+ * ║  Tasa: 1kHz  |  Algoritmo Usuario |  Salida: UART           ║
+ * ╚══════════════════════════════════════════════════════════════╝
  */
-void onConfigurationReceived(JsonDocument& doc) {
-    Serial.println("\n[SYSTEM] Applying new configuration from PC...");
+
+#include <Arduino.h>
+#include <Wire.h>
+#include <driver/uart.h>
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
+#include "freertos/queue.h"
+#include "esp_attr.h"
+
+#include "datalyx_payload.h"
+#include "vibration_analyzer.h"
+
+// ═══════════════════════════════════════════════════════════════
+//  CONFIGURACIÓN HARDWARE
+// ═══════════════════════════════════════════════════════════════
+#define MPU_ADDR          0x68
+#define PIN_SDA           8
+#define PIN_SCL           9
+#define PIN_INT           4    // INT pin del MPU6050
+#define UART_TX_PIN       43
+#define UART_RX_PIN       44
+#define UART_BAUD         2000000  // 2 Mbaud
+
+// MPU6050 Registros
+#define REG_PWR_MGMT_1    0x6B
+#define REG_SMPLRT_DIV    0x19
+#define REG_CONFIG        0x1A
+#define REG_ACCEL_CONFIG  0x1C
+#define REG_INT_PIN_CFG   0x37
+#define REG_INT_ENABLE    0x38
+#define REG_ACCEL_ZOUT_H  0x3F
+
+QueueHandle_t packet_queue;
+constexpr uint8_t QUEUE_SIZE = 4; // Buffer para 4 paquetes DatalyxPayload completos
+
+volatile bool isr_flag = false;
+
+IRAM_ATTR void mpu_isr() {
+    isr_flag = true;
+}
+
+IRAM_ATTR void mpu_write(uint8_t reg, uint8_t val) {
+    Wire.beginTransmission(MPU_ADDR);
+    Wire.write(reg); Wire.write(val);
+    Wire.endTransmission();
+}
+
+IRAM_ATTR bool mpu_read_accel_z(int16_t &z) {
+    Wire.beginTransmission(MPU_ADDR);
+    Wire.write(REG_ACCEL_ZOUT_H);
+    if (Wire.endTransmission(false) != 0) return false;
+    if (Wire.requestFrom((uint8_t)MPU_ADDR, (uint8_t)2, (bool)true) != 2) return false;
+    z = (Wire.read() << 8) | Wire.read();
+    return true;
+}
+
+void mpu_init() {
+    Wire.begin(PIN_SDA, PIN_SCL);
+    Wire.setClock(1000000);  // 1 MHz — Fast Mode+
+
+    mpu_write(REG_PWR_MGMT_1,  0x01);  // Despertar
+    delay(100);
+
+    mpu_write(REG_SMPLRT_DIV,  0x00);  // Rate = 1kHz
+    mpu_write(REG_CONFIG,      0x02);  // DLPF 94Hz
+    mpu_write(REG_ACCEL_CONFIG, 0x08); // ±4g: 8192 LSB/g
+    mpu_write(REG_INT_PIN_CFG, 0x10);  // INT Active High
+    mpu_write(REG_INT_ENABLE,  0x01);  // DATA_RDY_EN
+
+    Serial.println("[MPU] Inicializado: 1kHz");
+}
+
+void sensor_task(void* pvParameters) {
+    VibrationAnalyzer analyzer;
+    const float SCALE = 1.0f / 8192.0f; // Pasar de LSB a G (±4g)
     
-    // 1. Open LittleFS in write mode to save the new configuration
-    File file = LittleFS.open(CONFIG_FILE_PATH, "w");
-    if (file) {
-        serializeJson(doc, file);
-        file.close();
-        Serial.println("[SYSTEM] New config saved to LittleFS.");
-        
-        // 2. Reload the analyzer limits/parameters with the new data
-        if (analyzer.loadConfig(CONFIG_FILE_PATH)) {
-            
-            // 3. Check if the server assigned a new specific name to this machine
-            // If the name changed, the NetworkManager will disconnect and reconnect
-            // with the new MQTT topics automatically.
-            String newMachineName = analyzer.getConfig().machineName;
-            network.updateDeviceId(newMachineName);
-            
-            Serial.println("[SYSTEM] System updated successfully. Ready for operation.");
-        } else {
-            Serial.println("[ERROR] Failed to load the newly saved configuration into the Analyzer.");
+    DatalyxPayload current_payload;
+    int sample_index = 0;
+    
+    while (true) {
+        if (!isr_flag) {
+            taskYIELD();
+            continue;
         }
-    } else {
-        Serial.println("[ERROR] Failed to open config.json for writing.");
+        isr_flag = false;
+        
+        int16_t rz;
+        if (!mpu_read_accel_z(rz)) continue;
+        
+        // El sensor lee Z, escalar de LSB a G
+        float az_g = (float)rz * SCALE;
+        
+        // Calcular la velocidad usando el algoritmo provisto por el usuario
+        float velocidad = analyzer.calcularVelocidadVibracion(az_g);
+        
+        current_payload.velocity_buffer[sample_index] = velocidad;
+        sample_index++;
+        
+        if (sample_index >= SAMPLES_PER_PAYLOAD) {
+            // Calcular métricas RMS y Pico-Pico
+            float sum_sq = 0.0f;
+            float max_v = -10000.0f;
+            float min_v = 10000.0f;
+            
+            for (int i = 0; i < SAMPLES_PER_PAYLOAD; i++) {
+                float v = current_payload.velocity_buffer[i];
+                sum_sq += v * v;
+                if (v > max_v) max_v = v;
+                if (v < min_v) min_v = v;
+            }
+            
+            current_payload.rms_velocity = sqrtf(sum_sq / (float)SAMPLES_PER_PAYLOAD);
+            current_payload.peak_to_peak = max_v - min_v;
+            
+            current_payload.timestamp_ms = millis();
+            current_payload.motor_id = 1;
+            
+            // Checksum ignorando el propio campo checksum
+            current_payload.checksum = calcularChecksum(&current_payload, sizeof(DatalyxPayload) - 2);
+            
+            xQueueSend(packet_queue, &current_payload, 0);
+            sample_index = 0;
+        }
+    }
+}
+
+void comms_task(void* pvParameters) {
+    uart_config_t uart_cfg = {
+        .baud_rate  = UART_BAUD,
+        .data_bits  = UART_DATA_8_BITS,
+        .parity     = UART_PARITY_DISABLE,
+        .stop_bits  = UART_STOP_BITS_1,
+        .flow_ctrl  = UART_HW_FLOWCTRL_DISABLE,
+    };
+    uart_driver_install(UART_NUM_2, 2048, 2048, 0, nullptr, 0);
+    uart_param_config(UART_NUM_2, &uart_cfg);
+    uart_set_pin(UART_NUM_2, UART_TX_PIN, UART_RX_PIN, UART_PIN_NO_CHANGE, UART_PIN_NO_CHANGE);
+
+    DatalyxPayload pkt;
+
+    while (true) {
+        if (xQueueReceive(packet_queue, &pkt, portMAX_DELAY) == pdTRUE) {
+            // UART_write_bytes transmitirá los 1040 bytes binarios tal cual
+            uart_write_bytes(UART_NUM_2, (const char*)&pkt, sizeof(DatalyxPayload));
+        }
     }
 }
 
 void setup() {
     Serial.begin(115200);
-    // while (!Serial) { delay(10); } // ESPERA DE SERIAL ELIMINADA para permitir uso con fuente de alimentación externa
-    delay(1000); // Allow serial monitor to catch up
-    Serial.println("\n=========================================");
-    Serial.println("   INDUSTRIAL PREDICTIVE MAINT SYSTEM    ");
-    Serial.println("=========================================");
+    setCpuFrequencyMhz(240);
 
-    // --- Configuración e Inicialización de Hardware (Buzzer y MPU6050) ---
-    pinMode(BUZZER_PIN, OUTPUT);
-    digitalWrite(BUZZER_PIN, LOW); // Asegurarse de que el buzzer esté apagado
+    mpu_init();
+    packet_queue = xQueueCreate(QUEUE_SIZE, sizeof(DatalyxPayload));
 
-    Wire.begin(MPU_SDA_PIN, MPU_SCL_PIN);
-    if (!mpu.begin(0x68, &Wire, 0)) {
-        Serial.println("[ERROR] No se pudo encontrar el MPU6050. Revisa el cableado.");
-    } else {
-        Serial.println("[SYSTEM] MPU6050 inicializado correctamente.");
-        mpu.setAccelerometerRange(MPU6050_RANGE_8_G);
-        mpu.setFilterBandwidth(MPU6050_BAND_21_HZ);
-    }
-    
-    // --- 1. Initialize Non-Volatile File System (LittleFS) ---
-    if (!LittleFS.begin(true)) {
-        Serial.println("[CRITICAL ERROR] LittleFS mount failed. Halting system.");
-        while (true) { delay(1000); } // Halt the processor if storage fails
-    }
+    pinMode(PIN_INT, INPUT);
+    attachInterrupt(digitalPinToInterrupt(PIN_INT), mpu_isr, RISING);
 
-    // --- 2. Load Configuration or Enter Factory Mode ---
-    // By default, we pass an empty string. The NetworkManager knows that an empty 
-    // string means "I am a new device, generate my ID based on my MAC address".
-    String currentDeviceId = ""; 
-    
-    if (LittleFS.exists(CONFIG_FILE_PATH)) {
-        Serial.println("[SYSTEM] Found existing config.json. Attempting to load...");
-        
-        if (analyzer.loadConfig(CONFIG_FILE_PATH)) {
-            // Success! The device has been configured before. We grab its assigned name.
-            currentDeviceId = analyzer.getConfig().machineName;
-            Serial.println("[SYSTEM] Loaded config for machine: " + currentDeviceId);
-        } else {
-            Serial.println("[WARNING] config.json exists but parsing failed. Booting in Factory Mode.");
-        }
-    } else {
-        Serial.println("[SYSTEM] No config.json found. Booting in Factory/Setup Mode.");
-    }
-
-    // --- 3. Initialize Network and MQTT ---
-    // If currentDeviceId is "", it will auto-name itself "AIoT-<MAC>" and 
-    // subscribe to "maquinas/APC-<MAC>/config".
-    // If it has a saved name (e.g., "Motor_Pomba_1"), it will use that.
-    network.begin(currentDeviceId);
-    
-    // Attach the callback function to handle incoming setup commands
-    network.setConfigCallback(onConfigurationReceived);
+    // Ajustar stack size a 8192 porque DatalyxPayload ocupa ~1KB y está en stack local
+    xTaskCreatePinnedToCore(sensor_task, "sensor", 8192, nullptr, 24, nullptr, 1);
+    xTaskCreatePinnedToCore(comms_task, "comms", 8192, nullptr, 20, nullptr, 0);
 }
 
 void loop() {
-    // --- 1. Network Maintenance (Asynchronous) ---
-    // This handles Wi-Fi reconnections, MQTT keep-alive pings, and processes 
-    // incoming JSON payloads without blocking the processor.
-    network.loop(); 
-
-    // --- 2. Sensor Data Acquisition & Edge AI Processing ---
-    // Using a non-blocking timer (millis) instead of delay() ensures the network
-    // stack is never starved of CPU time.
-    static unsigned long lastAnalysisTime = 0;
-    unsigned long interval = analyzer.getConfig().isLoaded ? 
-    analyzer.getConfig().samplingRate : 1000;
-    
-    if (millis() - lastAnalysisTime >= interval) { 
-        lastAnalysisTime = millis();
-        
-        // Lectura del sensor MPU6050 en lugar del dummy buffer
-        float realBuffer[100]; 
-        for(int i = 0; i < 100; i++) {
-            sensors_event_t a, g, temp;
-            
-            // Inicializar las estructuras a 0 para borrar "basura de memoria"
-            memset(&a, 0, sizeof(a));
-            memset(&g, 0, sizeof(g));
-            memset(&temp, 0, sizeof(temp));
-
-            // Si se lee correctamente, usamos la magnitud real. Si falla, queda en 0.
-            if (mpu.getEvent(&a, &g, &temp)) {
-                // Usamos la magnitud de la aceleración para el análisis de vibración
-                realBuffer[i] = sqrt(pow(a.acceleration.x, 2) + pow(a.acceleration.y, 2) + pow(a.acceleration.z, 2)); 
-            } else {
-                realBuffer[i] = 0.0f; 
-            }
-            delay(2); // Retardo pequeño para espaciar las muestras
-        }
-
-        // Execute Edge processing: ISO 20816 Math (RMS, Variance, FFT, etc.)
-        AnalysisResult result = analyzer.analyze(realBuffer, 100);
-        String zoneLabel = analyzer.getZoneString(result.zone); // e.g., "ZONE_A_GOOD", "ZONE_D_DANGER"
-
-        // Publish the telemetry data to the MQTT broker
-        network.publishTelemetry(result.rms, result.variance, zoneLabel);
-
-        // Activar el buzzer (pin 11) cuando supera los límites de la zona C de la norma ISO
-        // (es decir, cuando rebasa el umbral inaceptable y entra en Zona D)
-        if (result.zone == IsoZone::ZONE_B) {
-            digitalWrite(BUZZER_PIN, HIGH);
-            delay(500);
-            digitalWrite(BUZZER_PIN, LOW);
-            delay(500);
-            digitalWrite(BUZZER_PIN, HIGH);
-            delay(500);
-            digitalWrite(BUZZER_PIN, LOW);
-            delay(500);
-            digitalWrite(BUZZER_PIN, HIGH);
-            delay(500);
-            digitalWrite(BUZZER_PIN, LOW);
-            delay(500);
-            digitalWrite(BUZZER_PIN, HIGH);
-            delay(500);
-            digitalWrite(BUZZER_PIN, LOW);
-        } else if (result.zone == IsoZone::ZONE_C)
-        {
-            digitalWrite(BUZZER_PIN, HIGH);
-            delay(1000);
-            digitalWrite(BUZZER_PIN, LOW);
-            delay(500);
-            digitalWrite(BUZZER_PIN, HIGH);
-            delay(1000);
-            digitalWrite(BUZZER_PIN, LOW);
-            delay(500);
-            digitalWrite(BUZZER_PIN, HIGH);
-            delay(1000);
-            digitalWrite(BUZZER_PIN, LOW);
-            delay(500);
-            digitalWrite(BUZZER_PIN, HIGH);
-            delay(1000);
-            digitalWrite(BUZZER_PIN, LOW);
-        }
-        else if (result.zone == IsoZone::ZONE_D)
-        {
-            digitalWrite(BUZZER_PIN, HIGH);
-        }
-        
-        else {
-            digitalWrite(BUZZER_PIN, LOW);
-        }
-    }
+    vTaskDelay(portMAX_DELAY);
 }
