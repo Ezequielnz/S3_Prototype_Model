@@ -7,7 +7,9 @@
 
 #include <Arduino.h>
 #include <Wire.h>
-#include <driver/uart.h>
+#include <SPI.h>
+#include <Ethernet.h>
+#include <EthernetUdp.h>
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "freertos/queue.h"
@@ -17,15 +19,24 @@
 #include "vibration_analyzer.h"
 
 // ═══════════════════════════════════════════════════════════════
-//  CONFIGURACIÓN HARDWARE
+//  CONFIGURACIÓN HARDWARE Y RED (W5500)
 // ═══════════════════════════════════════════════════════════════
 #define MPU_ADDR          0x68
 #define PIN_SDA           8
 #define PIN_SCL           9
-#define PIN_INT           4    // INT pin del MPU6050
-#define UART_TX_PIN       43
-#define UART_RX_PIN       44
-#define UART_BAUD         2000000  // 2 Mbaud
+#define PIN_INT           4
+
+// Pines SPI para el W5500 en el S3 Supermini (Ajustar si es necesario)
+#define W5500_CS_PIN      10 
+
+// Configuración de RED (Asignar IPs estáticas ya que no hay Router DHCP)
+byte mac[] = { 0xDE, 0xAD, 0xBE, 0xEF, 0xFE, 0x01 }; // Única por ESP32
+IPAddress ip_local(192, 168, 0, 101);                // IP del ESP32
+IPAddress ip_destino(192, 168, 0, 100);              // IP de la PC u Orange Pi
+unsigned int localPort = 8888;
+unsigned int destPort  = 5000;
+
+EthernetUDP Udp;
 
 // MPU6050 Registros
 #define REG_PWR_MGMT_1    0x6B
@@ -131,23 +142,29 @@ void sensor_task(void* pvParameters) {
 }
 
 void comms_task(void* pvParameters) {
-    uart_config_t uart_cfg = {
-        .baud_rate  = UART_BAUD,
-        .data_bits  = UART_DATA_8_BITS,
-        .parity     = UART_PARITY_DISABLE,
-        .stop_bits  = UART_STOP_BITS_1,
-        .flow_ctrl  = UART_HW_FLOWCTRL_DISABLE,
-    };
-    uart_driver_install(UART_NUM_2, 2048, 2048, 0, nullptr, 0);
-    uart_param_config(UART_NUM_2, &uart_cfg);
-    uart_set_pin(UART_NUM_2, UART_TX_PIN, UART_RX_PIN, UART_PIN_NO_CHANGE, UART_PIN_NO_CHANGE);
+    // Inicializar el chip W5500
+    Ethernet.init(W5500_CS_PIN);
+    
+    // Iniciar conexión con IP Estática
+    Ethernet.begin(mac, ip_local);
+    
+    // Esperar a que el link de hardware se establezca
+    while (Ethernet.hardwareStatus() == EthernetNoHardware || Ethernet.linkStatus() == LinkOFF) {
+        vTaskDelay(pdMS_TO_TICKS(500));
+        Serial.println("[Red] Esperando conexión al Switch...");
+    }
+
+    Udp.begin(localPort);
+    Serial.println("[Red] W5500 Iniciado por UDP. Enviando payloads.");
 
     DatalyxPayload pkt;
 
     while (true) {
         if (xQueueReceive(packet_queue, &pkt, portMAX_DELAY) == pdTRUE) {
-            // UART_write_bytes transmitirá los 1040 bytes binarios tal cual
-            uart_write_bytes(UART_NUM_2, (const char*)&pkt, sizeof(DatalyxPayload));
+            // Enviar los 1040 bytes por UDP
+            Udp.beginPacket(ip_destino, destPort);
+            Udp.write((const uint8_t*)&pkt, sizeof(DatalyxPayload));
+            Udp.endPacket();
         }
     }
 }

@@ -27,3 +27,18 @@ El tamaño constante por trampa es equivalente a **1040 bytes** sin espacios mue
 | **Seguridad EMI**   | 2 B    | `uint16_t`           | Suma de verificación simple (Checksum) |
 
 Los microcontroladores envían estas tramas de 1040 bytes de manera constante utilizando enlace Serial (UART), logrando inyecciones de un paquete cada ~256 milisegundos hacia Orange Pi.
+
+## 🖧 Configuración para Múltiples Microcontroladores (Red LAN con W5500)
+
+Si utilizas un switch de red no administrable (como el TP-Link TL-SG105) sin servidor de asignación automática de IPs (DHCP), debes realizar configuraciones únicas para cada nuevo ESP32-S3 que incorpores al sistema. 
+
+**Antes de flashear el código en un nuevo microcontrolador, modifica en `src/main.cpp`:**
+
+1. **Dirección MAC (`mac`):** Cada W5500 debe tener una placa MAC diferente.
+   * *Ejemplo:* Incrementa el último dígito hexadecimal: `byte mac[] = { 0xDE, 0xAD, 0xBE, 0xEF, 0xFE, 0x02 };`
+2. **Dirección IP del Dispositivo (`ip_local`):** Asigna una IP estática incrementando el último segmento.
+   * *Ejemplo:* Si el MCU 1 tiene `192.168.0.101`, el MCU 2 debe llevar `192.168.0.102`.
+3. **ID Lógico (`motor_id`):** Dentro de `sensor_task()`, este valor diferencia de forma lógica el dato inyectado al paquete.
+   * *Ejemplo:* `current_payload.motor_id = 2;` 
+
+Con este setup, puedes usar múltiples W5500 y empalmar los cables de todos al Switch. El hardware del switch se encarga de colisionar los paquetes UDP hacia el puerto final y el script Python decodificará sus variados `motor_id` a baja latencia.
