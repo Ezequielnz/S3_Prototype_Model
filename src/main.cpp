@@ -111,7 +111,7 @@ void sensor_task(void* pvParameters) {
         // El sensor lee Z, escalar de LSB a G
         float az_g = (float)rz * SCALE;
         
-        // Calcular la velocidad usando el algoritmo provisto por el usuario
+        // Calcular la velocidad
         float velocidad = analyzer.calcularVelocidadVibracion(az_g);
         
         current_payload.velocity_buffer[sample_index] = velocidad;
