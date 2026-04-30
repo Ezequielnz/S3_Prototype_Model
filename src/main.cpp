@@ -26,8 +26,12 @@
 #define PIN_SCL           9
 #define PIN_INT           4
 
-// Pines SPI para el W5500 en el S3 Supermini (Ajustar si es necesario)
-#define W5500_CS_PIN      10 
+// Pines SPI para el W5500 en el S3 Supermini
+#define W5500_CS_PIN      10
+#define W5500_SCK_PIN     12
+#define W5500_MOSI_PIN    11
+#define W5500_MISO_PIN    13
+#define W5500_RST_PIN     5
 
 // Configuración de RED (Asignar IPs estáticas ya que no hay Router DHCP)
 byte mac[] = { 0xDE, 0xAD, 0xBE, 0xEF, 0xFE, 0x01 }; // Única por ESP32
@@ -142,6 +146,16 @@ void sensor_task(void* pvParameters) {
 }
 
 void comms_task(void* pvParameters) {
+    // Reset por hardware del W5500 para mayor estabilidad
+    pinMode(W5500_RST_PIN, OUTPUT);
+    digitalWrite(W5500_RST_PIN, LOW);
+    vTaskDelay(pdMS_TO_TICKS(10));
+    digitalWrite(W5500_RST_PIN, HIGH);
+    vTaskDelay(pdMS_TO_TICKS(150));
+
+    // Configurar los pines SPI específicos (SCK, MISO, MOSI, CS)
+    SPI.begin(W5500_SCK_PIN, W5500_MISO_PIN, W5500_MOSI_PIN, W5500_CS_PIN);
+
     // Inicializar el chip W5500
     Ethernet.init(W5500_CS_PIN);
     
