@@ -35,8 +35,8 @@
 
 // Configuración de RED (Asignar IPs estáticas ya que no hay Router DHCP)
 byte mac[] = { 0xDE, 0xAD, 0xBE, 0xEF, 0xFE, 0x01 }; // Única por ESP32
-IPAddress ip_local(192, 168, 0, 101);                // IP del ESP32
-IPAddress ip_destino(192, 168, 0, 100);              // IP de la PC u Orange Pi
+IPAddress ip_local(10, 0, 0, 101);                   // IP del ESP32 (Subred aislada)
+IPAddress ip_destino(10, 0, 0, 100);                 // IP de la PC u Orange Pi (Subred aislada)
 unsigned int localPort = 8888;
 unsigned int destPort  = 5000;
 
@@ -54,10 +54,14 @@ EthernetUDP Udp;
 QueueHandle_t packet_queue;
 constexpr uint8_t QUEUE_SIZE = 4; // Buffer para 4 paquetes DatalyxPayload completos
 
-volatile bool isr_flag = false;
+TaskHandle_t sensor_task_handle = NULL;
 
 IRAM_ATTR void mpu_isr() {
-    isr_flag = true;
+    BaseType_t xHigherPriorityTaskWoken = pdFALSE;
+    vTaskNotifyGiveFromISR(sensor_task_handle, &xHigherPriorityTaskWoken);
+    if (xHigherPriorityTaskWoken) {
+        portYIELD_FROM_ISR();
+    }
 }
 
 IRAM_ATTR void mpu_write(uint8_t reg, uint8_t val) {
@@ -75,9 +79,33 @@ IRAM_ATTR bool mpu_read_accel_z(int16_t &z) {
     return true;
 }
 
+void mpu_clear_int() {
+    Wire.beginTransmission(MPU_ADDR);
+    Wire.write(0x3A); // Registro INT_STATUS (leerlo limpia el pin INT)
+    Wire.endTransmission(false);
+    Wire.requestFrom((uint8_t)MPU_ADDR, (uint8_t)1, (bool)true);
+    Wire.read();
+}
+
 void mpu_init() {
     Wire.begin(PIN_SDA, PIN_SCL);
     Wire.setClock(1000000);  // 1 MHz — Fast Mode+
+    Wire.setTimeOut(10);     // Timeout 10ms anti-cuelgues por ruido eléctrico
+
+    // Verificación de conexión I2C (WHO_AM_I)
+    Wire.beginTransmission(MPU_ADDR);
+    Wire.write(0x75);
+    if (Wire.endTransmission(false) == 0) {
+        Wire.requestFrom((uint8_t)MPU_ADDR, (uint8_t)1, (bool)true);
+        uint8_t whoami = Wire.read();
+        if (whoami == 0x68) {
+            Serial.println("[MPU] Sensor detectado correctamente!");
+        } else {
+            Serial.printf("[MPU] ATENCIÓN: Dispositivo detectado pero WHO_AM_I es 0x%02X (Debería ser 0x68)\n", whoami);
+        }
+    } else {
+        Serial.println("[ERROR CRÍTICO] MPU6050 NO ENCONTRADO. ¡Revisa que SDA esté en el pin 8, SCL en el pin 9, VCC y GND!");
+    }
 
     mpu_write(REG_PWR_MGMT_1,  0x01);  // Despertar
     delay(100);
@@ -99,14 +127,28 @@ void sensor_task(void* pvParameters) {
     int sample_index = 0;
     
     while (true) {
-        if (!isr_flag) {
-            taskYIELD();
+        // Esperar eficientemente la interrupción, con timeout de 5ms por si el pin INT se pega
+        if (ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(5)) == 0) {
+            // Timeout: El pin INT quedó pegado en HIGH o hubo cuelgue I2C.
+            // Reiniciamos el periférico I2C del ESP32 por hardware
+            Wire.end(); 
+            Wire.begin(PIN_SDA, PIN_SCL);
+            Wire.setClock(1000000);
+            Wire.setTimeOut(10);
+            mpu_clear_int();
             continue;
         }
-        isr_flag = false;
         
         int16_t rz;
-        if (!mpu_read_accel_z(rz)) continue;
+        if (!mpu_read_accel_z(rz)) {
+            // Falla de lectura por ruido I2C.
+            Wire.end(); 
+            Wire.begin(PIN_SDA, PIN_SCL);
+            Wire.setClock(1000000);
+            Wire.setTimeOut(10);
+            mpu_clear_int();
+            continue;
+        }
         
         // El sensor lee Z, escalar de LSB a G
         float az_g = (float)rz * SCALE;
@@ -163,9 +205,16 @@ void comms_task(void* pvParameters) {
     Ethernet.begin(mac, ip_local);
     
     // Esperar a que el link de hardware se establezca
-    while (Ethernet.hardwareStatus() == EthernetNoHardware || Ethernet.linkStatus() == LinkOFF) {
-        vTaskDelay(pdMS_TO_TICKS(500));
-        Serial.println("[Red] Esperando conexión al Switch...");
+    while (true) {
+        if (Ethernet.hardwareStatus() == EthernetNoHardware) {
+            Serial.println("[Red] Error: W5500 no detectado (Fallo SPI). Revisa los cables SCK, MISO, MOSI, CS.");
+        } else if (Ethernet.linkStatus() == LinkOFF) {
+            Serial.println("[Red] W5500 detectado (SPI OK), pero no hay Link (Cable desconectado o no Auto-MDIX).");
+        } else {
+            Serial.println("[Red] Hardware y Link OK!");
+            break;
+        }
+        vTaskDelay(pdMS_TO_TICKS(1000));
     }
 
     Udp.begin(localPort);
@@ -179,13 +228,25 @@ void comms_task(void* pvParameters) {
             Udp.beginPacket(ip_destino, destPort);
             Udp.write((const uint8_t*)&pkt, sizeof(DatalyxPayload));
             Udp.endPacket();
+            
+            static int pkt_count = 0;
+            pkt_count++;
+            if (pkt_count % 4 == 0) { // Imprimir 1 vez por segundo aprox (4 payloads de 256 ms)
+                Serial.println("[W5500] Paquete UDP de 1040 bytes enviado a la PC!");
+            }
         }
     }
 }
 
+#define LED_BUILTIN_PIN 47 // Pin del LED azul en el S3 Super Mini
+
 void setup() {
     Serial.begin(115200);
     setCpuFrequencyMhz(240);
+
+    // Configurar el LED interno para que sepamos que está encendido
+    pinMode(LED_BUILTIN_PIN, OUTPUT);
+    digitalWrite(LED_BUILTIN_PIN, LOW); // En muchos S3 el LED enciende en estado LOW
 
     mpu_init();
     packet_queue = xQueueCreate(QUEUE_SIZE, sizeof(DatalyxPayload));
@@ -194,10 +255,14 @@ void setup() {
     attachInterrupt(digitalPinToInterrupt(PIN_INT), mpu_isr, RISING);
 
     // Ajustar stack size a 8192 porque DatalyxPayload ocupa ~1KB y está en stack local
-    xTaskCreatePinnedToCore(sensor_task, "sensor", 8192, nullptr, 24, nullptr, 1);
+    xTaskCreatePinnedToCore(sensor_task, "sensor", 8192, nullptr, 24, &sensor_task_handle, 1);
     xTaskCreatePinnedToCore(comms_task, "comms", 8192, nullptr, 20, nullptr, 0);
 }
 
 void loop() {
-    vTaskDelay(portMAX_DELAY);
+    // Parpadeo de "Latido de corazón" (Heartbeat)
+    digitalWrite(LED_BUILTIN_PIN, LOW);  // Enciende
+    vTaskDelay(pdMS_TO_TICKS(100));
+    digitalWrite(LED_BUILTIN_PIN, HIGH); // Apaga
+    vTaskDelay(pdMS_TO_TICKS(900));
 }
