@@ -7,6 +7,7 @@
 
 #include <Arduino.h>
 #include <Wire.h>
+/*
 #include <SPI.h>
 #include <Ethernet.h>
 #include <EthernetUdp.h>
@@ -17,6 +18,7 @@
 
 #include "datalyx_payload.h"
 #include "vibration_analyzer.h"
+*/
 
 // ═══════════════════════════════════════════════════════════════
 //  CONFIGURACIÓN HARDWARE Y RED (W5500)
@@ -24,7 +26,10 @@
 #define MPU_ADDR          0x68
 #define PIN_SDA           8
 #define PIN_SCL           9
-#define PIN_INT           4
+
+#define PIN_INT           6
+
+/*
 
 // Pines SPI para el W5500 en el S3 Supermini
 #define W5500_CS_PIN      10
@@ -41,16 +46,24 @@ unsigned int localPort = 8888;
 unsigned int destPort  = 5000;
 
 EthernetUDP Udp;
+*/
 
 // MPU6050 Registros
 #define REG_PWR_MGMT_1    0x6B
 #define REG_SMPLRT_DIV    0x19
+/*
 #define REG_CONFIG        0x1A
+*/
 #define REG_ACCEL_CONFIG  0x1C
 #define REG_INT_PIN_CFG   0x37
 #define REG_INT_ENABLE    0x38
+#define REG_ACCEL_XOUT_H  0x3B
 #define REG_ACCEL_ZOUT_H  0x3F
 
+unsigned long tiempoAnterior = 0;
+const unsigned long intervalo = 4167;
+
+/*
 QueueHandle_t packet_queue;
 constexpr uint8_t QUEUE_SIZE = 4; // Buffer para 4 paquetes DatalyxPayload completos
 
@@ -63,6 +76,7 @@ IRAM_ATTR void mpu_isr() {
         portYIELD_FROM_ISR();
     }
 }
+*/
 
 IRAM_ATTR void mpu_write(uint8_t reg, uint8_t val) {
     Wire.beginTransmission(MPU_ADDR);
@@ -74,11 +88,23 @@ IRAM_ATTR bool mpu_read_accel_z(int16_t &z) {
     Wire.beginTransmission(MPU_ADDR);
     Wire.write(REG_ACCEL_ZOUT_H);
     if (Wire.endTransmission(false) != 0) return false;
-    if (Wire.requestFrom((uint8_t)MPU_ADDR, (uint8_t)2, (bool)true) != 2) return false;
+    if (Wire.requestFrom((uint8_t)MPU_ADDR, (uint8_t)2, (uint8_t)true) != 2) return false;
     z = (Wire.read() << 8) | Wire.read();
     return true;
 }
 
+IRAM_ATTR bool mpu_read_accel(int16_t &x, int16_t &y, int16_t &z) {
+    Wire.beginTransmission(MPU_ADDR);
+    Wire.write(REG_ACCEL_XOUT_H);
+    if (Wire.endTransmission(false) != 0) return false;
+    if (Wire.requestFrom((uint8_t)MPU_ADDR, (uint8_t)6, (uint8_t)true) != 6) return false;
+    x = (Wire.read() << 8) | Wire.read();
+    y = (Wire.read() << 8) | Wire.read();
+    z = (Wire.read() << 8) | Wire.read();
+    return true;
+}
+
+/*
 void mpu_clear_int() {
     Wire.beginTransmission(MPU_ADDR);
     Wire.write(0x3A); // Registro INT_STATUS (leerlo limpia el pin INT)
@@ -86,17 +112,18 @@ void mpu_clear_int() {
     Wire.requestFrom((uint8_t)MPU_ADDR, (uint8_t)1, (bool)true);
     Wire.read();
 }
+*/
 
 void mpu_init() {
     Wire.begin(PIN_SDA, PIN_SCL);
     Wire.setClock(1000000);  // 1 MHz — Fast Mode+
     Wire.setTimeOut(10);     // Timeout 10ms anti-cuelgues por ruido eléctrico
 
-    // Verificación de conexión I2C (WHO_AM_I)
+    // Verificación de conexión I2C (WHO_AM_I) - Comprobación de cables
     Wire.beginTransmission(MPU_ADDR);
     Wire.write(0x75);
     if (Wire.endTransmission(false) == 0) {
-        Wire.requestFrom((uint8_t)MPU_ADDR, (uint8_t)1, (bool)true);
+        Wire.requestFrom((uint8_t)MPU_ADDR, (uint8_t)1, (uint8_t)true);
         uint8_t whoami = Wire.read();
         if (whoami == 0x68) {
             Serial.println("[MPU] Sensor detectado correctamente!");
@@ -108,10 +135,12 @@ void mpu_init() {
     }
 
     mpu_write(REG_PWR_MGMT_1,  0x01);  // Despertar
-    delay(100);
+    // delay(100); // Comentado para no tener delay
 
     mpu_write(REG_SMPLRT_DIV,  0x00);  // Rate = 1kHz
-    mpu_write(REG_CONFIG,      0x02);  // DLPF 94Hz
+    /*
+    mpu_write(REG_CONFIG,      0x02);  // DLPF 94Hz (Filtro comentado)
+    */
     mpu_write(REG_ACCEL_CONFIG, 0x08); // ±4g: 8192 LSB/g
     mpu_write(REG_INT_PIN_CFG, 0x10);  // INT Active High
     mpu_write(REG_INT_ENABLE,  0x01);  // DATA_RDY_EN
@@ -119,6 +148,7 @@ void mpu_init() {
     Serial.println("[MPU] Inicializado: 1kHz");
 }
 
+/*
 void sensor_task(void* pvParameters) {
     VibrationAnalyzer analyzer;
     const float SCALE = 1.0f / 8192.0f; // Pasar de LSB a G (±4g)
@@ -239,16 +269,23 @@ void comms_task(void* pvParameters) {
 }
 
 #define LED_BUILTIN_PIN 47 // Pin del LED azul en el S3 Super Mini
+*/
 
 void setup() {
     Serial.begin(115200);
-    setCpuFrequencyMhz(240);
+    //setCpuFrequencyMhz(240);
 
+    /*
     // Configurar el LED interno para que sepamos que está encendido
     pinMode(LED_BUILTIN_PIN, OUTPUT);
     digitalWrite(LED_BUILTIN_PIN, LOW); // En muchos S3 el LED enciende en estado LOW
+    */
 
     mpu_init();
+    
+    pinMode(PIN_INT, INPUT);
+
+    /*
     packet_queue = xQueueCreate(QUEUE_SIZE, sizeof(DatalyxPayload));
 
     pinMode(PIN_INT, INPUT);
@@ -257,12 +294,34 @@ void setup() {
     // Ajustar stack size a 8192 porque DatalyxPayload ocupa ~1KB y está en stack local
     xTaskCreatePinnedToCore(sensor_task, "sensor", 8192, nullptr, 24, &sensor_task_handle, 1);
     xTaskCreatePinnedToCore(comms_task, "comms", 8192, nullptr, 20, nullptr, 0);
+    */
 }
 
 void loop() {
+    /*
     // Parpadeo de "Latido de corazón" (Heartbeat)
     digitalWrite(LED_BUILTIN_PIN, LOW);  // Enciende
     vTaskDelay(pdMS_TO_TICKS(100));
     digitalWrite(LED_BUILTIN_PIN, HIGH); // Apaga
     vTaskDelay(pdMS_TO_TICKS(900));
+    */
+    
+    unsigned long tiempoActual = micros();
+    
+    if (tiempoActual - tiempoAnterior >= intervalo) {
+        tiempoAnterior = tiempoActual;
+
+        int16_t rx, ry, rz;
+        if (mpu_read_accel(rx, ry, rz)) {
+            float ax_g = (float)rx * (1.0f / 8192.0f);
+            float ay_g = (float)ry * (1.0f / 8192.0f);
+            float az_g = (float)rz * (1.0f / 8192.0f);
+            
+            Serial.print(ax_g);
+            Serial.print(",");
+            Serial.print(ay_g);
+            Serial.print(",");
+            Serial.println(az_g);
+        }
+    }
 }
