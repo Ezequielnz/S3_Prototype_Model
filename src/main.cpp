@@ -317,11 +317,7 @@ void loop() {
             float ay_g = (float)ry * (1.0f / 8192.0f);
             float az_g = (float)rz * (1.0f / 8192.0f);
             
-            Serial.print(ax_g);
-            Serial.print(",");
-            Serial.print(ay_g);
-            Serial.print(",");
-            Serial.println(az_g);
+            Serial.println(ax_g);
         }
     }
 }
