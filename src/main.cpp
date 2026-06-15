@@ -29,6 +29,18 @@
 
 #define PIN_INT           6
 
+// ═══════════════════════════════════════════════════════════════
+//  CONFIGURACIÓN SENSOR DE CORRIENTE (SCT013-000)
+// ═══════════════════════════════════════════════════════════════
+#define PIN_ADC         3
+#define MUESTRAS        1000
+#define VOLTAJE_REF     3.3
+#define ADC_RESOLUCION  4095.0
+#define RESISTENCIA     68.0
+#define RATIO           2000.0
+#define FACTOR_CAL      0.97
+#define UMBRAL_RUIDO    0.30
+
 /*
 
 // Pines SPI para el W5500 en el S3 Supermini
@@ -146,6 +158,82 @@ void mpu_init() {
     mpu_write(REG_INT_ENABLE,  0x01);  // DATA_RDY_EN
 
     Serial.println("[MPU] Inicializado: 1kHz");
+}
+
+float ultimaCorriente = 0.0;
+
+float leerCorrienteRMS() {
+    /*--------------------------------------------------
+      1) Obtener punto medio real del ADC
+    --------------------------------------------------*/
+    uint32_t sumaCentro = 0;
+    for (int i = 0; i < 500; i++) {
+        sumaCentro += analogRead(PIN_ADC);
+        delayMicroseconds(50);
+    }
+    int puntoCentro = sumaCentro / 500;
+
+    /*--------------------------------------------------
+      2) Medir señal
+    --------------------------------------------------*/
+    uint64_t sumaCuadrados = 0;
+    int minimo = 4095;
+    int maximo = 0;
+
+    for (int i = 0; i < MUESTRAS; i++) {
+        int lectura = analogRead(PIN_ADC);
+        if (lectura < minimo) minimo = lectura;
+        if (lectura > maximo) maximo = lectura;
+
+        long muestra = lectura - puntoCentro;
+        sumaCuadrados += (uint64_t)muestra * muestra;
+        delayMicroseconds(100);
+    }
+
+    /*--------------------------------------------------
+      3) Diagnóstico de saturación
+    --------------------------------------------------*/
+    // Print comentado para no ensuciar la salida de alta velocidad
+    /*
+    Serial.print("Centro="); Serial.print(puntoCentro);
+    Serial.print("  Min=");  Serial.print(minimo);
+    Serial.print("  Max=");  Serial.print(maximo);
+    if (minimo <= 5 || maximo >= 4090) {
+        Serial.print("  >>> ADC SATURADO <<<");
+    }
+    Serial.println();
+    */
+
+    /*--------------------------------------------------
+      4) Calcular RMS del ADC
+    --------------------------------------------------*/
+    double rmsADC = (double)sumaCuadrados / (double)MUESTRAS;
+    if (rmsADC < 0 || isnan(rmsADC) || isinf(rmsADC)) return NAN;
+    
+    double voltajeRMS = sqrt(rmsADC) * (VOLTAJE_REF / ADC_RESOLUCION);
+
+    /*--------------------------------------------------
+      5) Convertir a corriente primaria
+    --------------------------------------------------*/
+    double corriente = (voltajeRMS / RESISTENCIA) * RATIO * FACTOR_CAL;
+
+    /*--------------------------------------------------
+      6) Validaciones
+    --------------------------------------------------*/
+    if (isnan(corriente) || isinf(corriente)) return NAN;
+    if (corriente < UMBRAL_RUIDO) corriente = 0.0;
+
+    return (float)corriente;
+}
+
+void tareaCorriente(void* pvParameters) {
+    while (true) {
+        float corriente = leerCorrienteRMS();
+        if (!isnan(corriente)) {
+            ultimaCorriente = corriente;
+        }
+        vTaskDelay(pdMS_TO_TICKS(1000)); // Leemos 1 vez por segundo
+    }
 }
 
 /*
@@ -275,6 +363,10 @@ void setup() {
     Serial.begin(115200);
     //setCpuFrequencyMhz(240);
 
+    // Configuracion ADC para el Sensor de Corriente
+    analogReadResolution(12);
+    analogSetAttenuation(ADC_11db);
+
     /*
     // Configurar el LED interno para que sepamos que está encendido
     pinMode(LED_BUILTIN_PIN, OUTPUT);
@@ -284,6 +376,9 @@ void setup() {
     mpu_init();
     
     pinMode(PIN_INT, INPUT);
+
+    // Tarea para leer la corriente en el core 0 (aislado del loop I2C)
+    xTaskCreatePinnedToCore(tareaCorriente, "corriente", 4096, nullptr, 1, nullptr, 0);
 
     /*
     packet_queue = xQueueCreate(QUEUE_SIZE, sizeof(DatalyxPayload));
@@ -317,7 +412,14 @@ void loop() {
             float ay_g = (float)ry * (1.0f / 8192.0f);
             float az_g = (float)rz * (1.0f / 8192.0f);
             
-            Serial.println(ax_g);
+            // Imprimir en formato CSV (ax_g, ay_g, az_g, corriente)
+            Serial.print(ax_g, 3);
+            Serial.print(",");
+            Serial.print(ay_g, 3);
+            Serial.print(",");
+            Serial.print(az_g, 3);
+            Serial.print(",");
+            Serial.println(ultimaCorriente, 3);
         }
     }
 }
