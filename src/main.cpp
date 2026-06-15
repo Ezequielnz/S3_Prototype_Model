@@ -3,8 +3,9 @@
  * ║  PREPROCESADOR DE ALTA VELOCIDAD — ESP32-S3 + MPU6050       ║
  * ║  Tasa: 1kHz  |  Algoritmo Usuario |  Salida: UART           ║
  * ╚══════════════════════════════════════════════════════════════╝
- */
+ */ 
 
+#include <config.h>
 #include <Arduino.h>
 #include <Wire.h>
 /*
