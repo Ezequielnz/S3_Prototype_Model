@@ -8,28 +8,38 @@ void mpu_write(uint8_t reg, uint8_t val) {
 }
 
 bool mpu_read_accel_z(int16_t &z) {
-    Wire.beginTransmission(MPU_ADDR);
-    Wire.write(REG_ACCEL_ZOUT_H);
-    if (Wire.endTransmission(false) != 0) return false;
-    if (Wire.requestFrom((uint8_t)MPU_ADDR, (uint8_t)2, (uint8_t)true) != 2) return false;
-    z = (Wire.read() << 8) | Wire.read();
-    return true;
+    for (int intentos = 0; intentos < 2; intentos++) {
+        Wire.beginTransmission(MPU_ADDR);
+        Wire.write(REG_ACCEL_ZOUT_H);
+        if (Wire.endTransmission() != 0) continue; // Si falla, reintenta
+        
+        if (Wire.requestFrom((uint8_t)MPU_ADDR, (uint8_t)2) == 2) {
+            z = (Wire.read() << 8) | Wire.read();
+            return true;
+        }
+    }
+    return false;
 }
 
 bool mpu_read_accel(int16_t &x, int16_t &y, int16_t &z) {
-    Wire.beginTransmission(MPU_ADDR);
-    Wire.write(REG_ACCEL_XOUT_H);
-    if (Wire.endTransmission(false) != 0) return false;
-    if (Wire.requestFrom((uint8_t)MPU_ADDR, (uint8_t)6, (uint8_t)true) != 6) return false;
-    x = (Wire.read() << 8) | Wire.read();
-    y = (Wire.read() << 8) | Wire.read();
-    z = (Wire.read() << 8) | Wire.read();
-    return true;
+    for (int intentos = 0; intentos < 2; intentos++) {
+        Wire.beginTransmission(MPU_ADDR);
+        Wire.write(REG_ACCEL_XOUT_H);
+        if (Wire.endTransmission() != 0) continue;
+        
+        if (Wire.requestFrom((uint8_t)MPU_ADDR, (uint8_t)6) == 6) {
+            x = (Wire.read() << 8) | Wire.read();
+            y = (Wire.read() << 8) | Wire.read();
+            z = (Wire.read() << 8) | Wire.read();
+            return true;
+        }
+    }
+    return false;
 }
 
 void mpu_init() {
     Wire.begin(PIN_SDA, PIN_SCL);
-    Wire.setClock(1000000);  // 1 MHz — Fast Mode+
+    Wire.setClock(400000);   // 400 kHz — Fast Mode (Máximo oficial del MPU6050)
     Wire.setTimeOut(10);     // Timeout 10ms anti-cuelgues por ruido eléctrico
 
     // Verificación de conexión I2C (WHO_AM_I) - Comprobación de cables
@@ -104,4 +114,47 @@ float leerCorrienteRMS() {
     if (corriente < UMBRAL_RUIDO) corriente = 0.0;
 
     return (float)corriente;
+}
+
+bool realizarDiagnostico() {
+    bool mpu_ok = false;
+    bool adc_ok = false;
+
+    Serial.println("\n--- INICIANDO DIAGNÓSTICO PREVIO ---");
+    
+    // 1. Diagnóstico del MPU6050
+    Serial.print("Verificando MPU6050 (Acelerómetro)... ");
+    Wire.beginTransmission(MPU_ADDR);
+    Wire.write(0x75); // Registro WHO_AM_I
+    if (Wire.endTransmission(false) == 0) {
+        if (Wire.requestFrom((uint8_t)MPU_ADDR, (uint8_t)1, (uint8_t)true) == 1) {
+            uint8_t whoami = Wire.read();
+            if (whoami == 0x68) {
+                mpu_ok = true;
+                Serial.println("[OK]");
+            } else {
+                Serial.printf("\n[FALLA] MPU6050 responde pero ID es incorrecto (0x%02X). Verifica VCC/GND.\n", whoami);
+            }
+        } else {
+            Serial.println("\n[FALLA] Error I2C (requestFrom -1). ¡Cable de SDA (pin 8) o SCL (pin 9) suelto o invertido!");
+        }
+    } else {
+        Serial.println("\n[FALLA] El MPU6050 no responde en absoluto. ¡Cable desconectado! Verifica SDA, SCL, VCC o GND.");
+    }
+
+    // 2. Diagnóstico del ADC (Sensor de Corriente)
+    Serial.print("Verificando SCT-013 (Sensor de Corriente)... ");
+    int adc_val = analogRead(PIN_ADC);
+    if (adc_val >= 0 && adc_val <= 4095) {
+        adc_ok = true;
+        Serial.println("[OK]");
+        if (adc_val <= 10 || adc_val >= 4085) {
+            Serial.println("  -> [ADVERTENCIA] El ADC lee un valor extremo. Verifica si el divisor de tensión está bien conectado o si el cable de señal (pin 3) está al aire.");
+        }
+    } else {
+        Serial.println("\n[FALLA] No se pudo leer el ADC del sensor de corriente.");
+    }
+
+    Serial.println("------------------------------------");
+    return (mpu_ok && adc_ok);
 }

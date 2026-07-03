@@ -48,10 +48,14 @@ void loop() {
     if (Serial.available() > 0) {
         char cmd = Serial.read();
         if (cmd == 'R' || cmd == 'r') {
-            grabando = true;
-            datos_listos = false;
-            Serial.println("¡GRABANDO EN RAM! ENCIENDE EL MOTOR AHORA...");
-            ejecutarRafagaRAM();
+            if (realizarDiagnostico()) {
+                grabando = true;
+                datos_listos = false;
+                Serial.println("¡GRABANDO EN RAM! ENCIENDE EL MOTOR AHORA...");
+                ejecutarRafagaRAM();
+            } else {
+                Serial.println("Grabación cancelada debido a fallo de conexión. ¡Corrige los cables y vuelve a enviar 'R'!");
+            }
         }
     }
 

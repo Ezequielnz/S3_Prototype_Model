@@ -39,6 +39,9 @@ bool mpu_read_accel_z(int16_t &z);
 bool mpu_read_accel(int16_t &x, int16_t &y, int16_t &z);
 void mpu_init();
 
+// Funciones Diagnóstico
+bool realizarDiagnostico();
+
 // Funciones Corriente
 float leerCorrienteRMS();
 
